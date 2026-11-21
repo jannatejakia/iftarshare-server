@@ -25,3 +25,9 @@ npm start
 The creator email is always taken from the verified token, never from the request body.
 
 Protected event operations verify the caller's JWT and enforce creator ownership for updates and deletion. Joining also prevents duplicate registrations and checks the event date and capacity before storing the join record.
+
+## Environment variables
+
+- `MONGODB_URI` points to the application database.
+- `CLIENT_URL` is the deployed client origin used for CORS and JWT key discovery.
+- `PORT` controls the local Express server port.
