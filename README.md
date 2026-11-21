@@ -23,3 +23,5 @@ npm start
 | GET | `/my-joined` | JWT | Events the caller joined, sorted by date |
 
 The creator email is always taken from the verified token, never from the request body.
+
+Protected event operations verify the caller's JWT and enforce creator ownership for updates and deletion. Joining also prevents duplicate registrations and checks the event date and capacity before storing the join record.
