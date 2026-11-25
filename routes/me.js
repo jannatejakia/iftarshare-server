@@ -7,7 +7,7 @@ const router = Router();
 router.get("/my-events", verifyToken, async (req, res) => {
     try {
         const events = await eventsCol
-            .find({ creatorEmail: req.user.email })
+            .find({ creatorEmail: req.user.email }, { projection: { capacity: 0, joinRevision: 0 } })
             .sort({ eventDate: 1 })
             .toArray();
         res.send(events);
@@ -32,6 +32,7 @@ router.get("/my-joined", verifyToken, async (req, res) => {
                     },
                 },
                 { $unwind: "$event" },
+                { $unset: ["event.capacity", "event.joinRevision"] },
                 { $sort: { "event.eventDate": 1 } },
             ])
             .toArray();

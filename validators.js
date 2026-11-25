@@ -5,20 +5,17 @@ export const EVENT_TYPES = ["Iftar Packet", "Sehri Meal", "Food Pack", "Water & 
 // returns an error message, or null if the event is fine
 export const validateEvent = (body) => {
     if (!body || typeof body !== "object" || Array.isArray(body)) return "Event data must be an object.";
-    const { title, description, eventType, thumbnail, location, eventDate, capacity } = body;
+    const { title, description, eventType, thumbnail, location, eventDate } = body;
     if ([title, description, thumbnail, location, eventDate].some((value) => typeof value !== "string"))
         return "Title, description, image URL, location and date must be text.";
-    if (!title?.trim() || title.trim().length < 5) return "Title must be at least 5 characters.";
-    if (!description?.trim() || description.trim().length < 20)
-        return "Description must be at least 20 characters.";
+    if (!title.trim()) return "Title is required.";
+    if (!description.trim()) return "Description is required.";
     if (!EVENT_TYPES.includes(eventType)) return "Please choose a valid event type.";
     if (!thumbnail || !/^https?:\/\/.+/i.test(thumbnail)) return "Thumbnail must be a valid image URL.";
     if (!location?.trim()) return "Location is required.";
     const date = new Date(eventDate);
     if (Number.isNaN(date.getTime())) return "Event date is invalid.";
     if (date <= new Date()) return "Event date must be in the future.";
-    if (!["number", "string"].includes(typeof capacity) || !Number.isSafeInteger(Number(capacity)) || Number(capacity) < 1)
-        return "Capacity must be a whole number of at least 1.";
     return null;
 };
 
@@ -30,7 +27,6 @@ export const pickEventFields = (body) => ({
     thumbnail: body.thumbnail.trim(),
     location: body.location.trim(),
     eventDate: new Date(body.eventDate),
-    capacity: Number(body.capacity),
 });
 
 export const validId = (id) => ObjectId.isValid(id);
