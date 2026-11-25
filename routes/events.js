@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { ObjectId } from "mongodb";
-import { eventsCol, joinsCol } from "../db.js";
+import { client, eventsCol, joinsCol } from "../db.js";
 import { verifyToken } from "../middleware/auth.js";
 import { validateEvent, pickEventFields, validId } from "../validators.js";
 
@@ -18,7 +18,12 @@ router.get("/", async (req, res) => {
         }
 
         let cursor = eventsCol.find(filter).sort({ eventDate: 1 });
-        if (limit) cursor = cursor.limit(Math.min(Number(limit) || 6, 50));
+        if (limit) {
+            const count = Number(limit);
+            if (!Number.isSafeInteger(count) || count < 1)
+                return res.status(400).send({ message: "Limit must be a positive whole number." });
+            cursor = cursor.limit(Math.min(count, 50));
+        }
         res.send(await cursor.toArray());
     } catch (err) {
         console.error(err);
@@ -65,12 +70,20 @@ router.patch("/:id", verifyToken, async (req, res) => {
     if (error) return res.status(400).send({ message: error });
 
     try {
-        const result = await eventsCol.updateOne(
-            { _id: new ObjectId(req.params.id), creatorEmail: req.user.email }, // ownership check
-            { $set: { ...pickEventFields(req.body), updatedAt: new Date() } }
-        );
-        if (result.matchedCount === 0)
-            return res.status(403).send({ message: "You can only update your own events." });
+        const outcome = await client.withSession((session) => session.withTransaction(async () => {
+            const _id = new ObjectId(req.params.id);
+            const event = await eventsCol.findOne({ _id, creatorEmail: req.user.email }, { session });
+            if (!event) return { status: 403, message: "You can only update your own events." };
+            const joined = await joinsCol.countDocuments({ eventId: _id }, { session });
+            if (Number(req.body.capacity) < joined)
+                return { status: 400, message: "Capacity cannot be lower than the number of people already joined." };
+            await eventsCol.updateOne({ _id }, {
+                $set: { ...pickEventFields(req.body), updatedAt: new Date() },
+                $inc: { joinRevision: 1 },
+            }, { session });
+            return null;
+        }));
+        if (outcome) return res.status(outcome.status).send({ message: outcome.message });
         res.send({ message: "Event updated." });
     } catch (err) {
         console.error(err);
@@ -83,10 +96,14 @@ router.delete("/:id", verifyToken, async (req, res) => {
 
     try {
         const _id = new ObjectId(req.params.id);
-        const result = await eventsCol.deleteOne({ _id, creatorEmail: req.user.email });
-        if (result.deletedCount === 0)
+        const deleted = await client.withSession((session) => session.withTransaction(async () => {
+            const result = await eventsCol.deleteOne({ _id, creatorEmail: req.user.email }, { session });
+            if (!result.deletedCount) return false;
+            await joinsCol.deleteMany({ eventId: _id }, { session });
+            return true;
+        }));
+        if (!deleted)
             return res.status(403).send({ message: "You can only delete your own events." });
-        await joinsCol.deleteMany({ eventId: _id });
         res.send({ message: "Event deleted." });
     } catch (err) {
         console.error(err);
@@ -99,23 +116,23 @@ router.post("/:id/join", verifyToken, async (req, res) => {
 
     try {
         const eventId = new ObjectId(req.params.id);
-        const event = await eventsCol.findOne({ _id: eventId });
-        if (!event) return res.status(404).send({ message: "Event not found." });
-        if (event.eventDate <= new Date())
-            return res.status(400).send({ message: "This event has already passed." });
-        if (event.creatorEmail === req.user.email)
-            return res.status(400).send({ message: "You cannot join your own event." });
-
-        const joined = await joinsCol.countDocuments({ eventId });
-        if (joined >= event.capacity)
-            return res.status(400).send({ message: "This event is full." });
-
-        await joinsCol.insertOne({
-            eventId,
-            userEmail: req.user.email,
-            userName: req.user.name ?? "",
-            joinedAt: new Date(),
-        });
+        const outcome = await client.withSession((session) => session.withTransaction(async () => {
+            const event = await eventsCol.findOne({ _id: eventId }, { session });
+            if (!event) return { status: 404, message: "Event not found." };
+            if (event.eventDate <= new Date()) return { status: 400, message: "This event has already passed." };
+            if (event.creatorEmail === req.user.email) return { status: 400, message: "You cannot join your own event." };
+            const existing = await joinsCol.findOne({ eventId, userEmail: req.user.email }, { session });
+            if (existing) return { status: 409, message: "You have already joined this event." };
+            const joined = await joinsCol.countDocuments({ eventId }, { session });
+            if (joined >= event.capacity) return { status: 400, message: "This event is full." };
+            // Conflicting joins and capacity updates write the same event, so MongoDB retries
+            // the transaction against a fresh snapshot before allocating the last spot.
+            await eventsCol.updateOne({ _id: eventId }, { $inc: { joinRevision: 1 } }, { session });
+            await joinsCol.insertOne({ eventId, userEmail: req.user.email,
+                userName: req.user.name ?? "", joinedAt: new Date() }, { session });
+            return null;
+        }));
+        if (outcome) return res.status(outcome.status).send({ message: outcome.message });
         res.status(201).send({ message: "You joined this event." });
     } catch (err) {
         if (err.code === 11000)
